@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useContactStore } from '../store/contactStore';
 import { extractUsernames } from '../utils/parser';
 import { Upload, FileText, X, Zap } from 'lucide-react';
@@ -9,29 +9,56 @@ interface Props {
 }
 
 export default function ImportModal({ open, onClose }: Props) {
-  const [raw, setRaw] = useState('');
-  const [preview, setPreview] = useState<string[]>([]);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [raw, setRaw]           = useState('');
+  const [preview, setPreview]   = useState<string[]>([]);
+  const [parsing, setParsing]   = useState(false);
+  const [fileName, setFileName] = useState('');
+  const fileRef  = useRef<HTMLInputElement>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { importRaw } = useContactStore();
 
   if (!open) return null;
 
+  // Parse asynchronously so the UI stays responsive for large inputs
+  const schedulePreview = useCallback((text: string) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (!text.trim()) { setPreview([]); setParsing(false); return; }
+    setParsing(true);
+    timerRef.current = setTimeout(() => {
+      const result = extractUsernames(text);
+      setPreview(result);
+      setParsing(false);
+    }, 150);
+  }, []);
+
   const handleTextChange = (text: string) => {
     setRaw(text);
-    setPreview(extractUsernames(text));
+    setFileName('');
+    schedulePreview(text);
   };
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setFileName(file.name);
+    setRaw('');
+    setParsing(true);
+    // Read and parse off the render cycle
     const text = await file.text();
-    handleTextChange(text);
+    setTimeout(() => {
+      const result = extractUsernames(text);
+      setPreview(result);
+      setParsing(false);
+      // Store raw for import but don't put 100k lines into textarea
+      setRaw(text);
+    }, 0);
   };
 
   const handleImport = () => {
     importRaw(raw);
     setRaw('');
     setPreview([]);
+    setFileName('');
     onClose();
   };
 
@@ -59,12 +86,26 @@ export default function ImportModal({ open, onClose }: Props) {
 
         {/* Body */}
         <div className="p-5 flex-1 overflow-auto space-y-4">
-          <textarea
-            value={raw}
-            onChange={(e) => handleTextChange(e.target.value)}
-            placeholder={"Вставьте сюда данные...\n\n@username, https://t.me/user, CSV-данные\nВсё автоматически распарсится."}
-            className="w-full h-40 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-xs text-white placeholder:text-gray-600 outline-none focus:border-cyan-500/30 resize-none font-mono"
-          />
+          {/* Show textarea only when no file loaded (avoids rendering 100k lines) */}
+          {!fileName ? (
+            <textarea
+              value={raw}
+              onChange={(e) => handleTextChange(e.target.value)}
+              placeholder={"Вставьте сюда данные...\n\n@username, https://t.me/user, CSV-данные\nВсё автоматически распарсится."}
+              className="w-full h-40 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-xs text-white placeholder:text-gray-600 outline-none focus:border-cyan-500/30 resize-none font-mono"
+            />
+          ) : (
+            <div className="w-full h-40 bg-white/[0.03] border border-cyan-500/20 rounded-xl px-4 py-3 flex flex-col items-center justify-center gap-2">
+              <FileText size={28} className="text-cyan-400/60" />
+              <span className="text-xs text-cyan-400 font-medium truncate max-w-full px-2">{fileName}</span>
+              <button
+                onClick={() => { setFileName(''); setRaw(''); setPreview([]); if (fileRef.current) fileRef.current.value = ''; }}
+                className="text-[11px] text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                Убрать файл
+              </button>
+            </div>
+          )}
 
           <div className="flex items-center gap-3">
             <button
@@ -75,28 +116,34 @@ export default function ImportModal({ open, onClose }: Props) {
               Загрузить файл
             </button>
             <input ref={fileRef} type="file" accept=".csv,.txt,.tsv" onChange={handleFile} className="hidden" />
-            <span className="text-[11px] text-gray-600">.csv, .txt, .tsv</span>
+            <span className="text-[11px] text-gray-600">.csv, .txt, .tsv — до 100 000+</span>
           </div>
 
           {/* Preview */}
-          {preview.length > 0 && (
+          {(parsing || preview.length > 0) && (
             <div className="bg-white/[0.03] border border-white/10 rounded-xl p-3">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-gray-400">Найдено контактов:</span>
-                <span className="text-xs font-bold text-cyan-400">{preview.length}</span>
-              </div>
-              <div className="flex flex-wrap gap-1.5 max-h-32 overflow-auto">
-                {preview.slice(0, 50).map((u) => (
-                  <span key={u} className="px-2 py-0.5 bg-cyan-500/10 text-cyan-400 text-[11px] rounded-full">
-                    @{u}
-                  </span>
-                ))}
-                {preview.length > 50 && (
-                  <span className="px-2 py-0.5 bg-white/5 text-gray-500 text-[11px] rounded-full">
-                    +{preview.length - 50} ещё
-                  </span>
+                <span className="text-[11px] text-gray-400">
+                  {parsing ? 'Обработка...' : 'Найдено контактов:'}
+                </span>
+                {!parsing && (
+                  <span className="text-xs font-bold text-cyan-400">{preview.length.toLocaleString()}</span>
                 )}
               </div>
+              {!parsing && (
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-auto">
+                  {preview.slice(0, 50).map((u) => (
+                    <span key={u} className="px-2 py-0.5 bg-cyan-500/10 text-cyan-400 text-[11px] rounded-full">
+                      @{u}
+                    </span>
+                  ))}
+                  {preview.length > 50 && (
+                    <span className="px-2 py-0.5 bg-white/5 text-gray-500 text-[11px] rounded-full">
+                      +{(preview.length - 50).toLocaleString()} ещё
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -108,11 +155,11 @@ export default function ImportModal({ open, onClose }: Props) {
           </button>
           <button
             onClick={handleImport}
-            disabled={preview.length === 0}
+            disabled={preview.length === 0 || parsing}
             className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium bg-cyan-500 text-black hover:bg-cyan-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <Zap size={13} />
-            Импортировать {preview.length > 0 && `(${preview.length})`}
+            Импортировать {preview.length > 0 && `(${preview.length.toLocaleString()})`}
           </button>
         </div>
       </div>

@@ -1,19 +1,17 @@
 import { useContactStore } from '../store/contactStore';
-import { Upload, ShieldX, ScanSearch, Square, Search, CheckSquare, KeyRound, StopCircle } from 'lucide-react';
+import { Upload, ShieldX, ScanSearch, Square, Search, CheckSquare, StopCircle } from 'lucide-react';
 
 interface Props {
   onImport: () => void;
   onExclude: () => void;
-  onTokens: () => void;
 }
 
-export default function Header({ onImport, onExclude, onTokens }: Props) {
+export default function Header({ onImport, onExclude }: Props) {
   const {
     isValidating, validationProgress,
     startValidation, stopValidation,
     selectAll, deselectAll, selectedIds,
     getFilteredContacts, searchQuery, setSearch,
-    botTokens,
   } = useContactStore();
 
   const filtered    = getFilteredContacts();
@@ -73,22 +71,6 @@ export default function Header({ onImport, onExclude, onTokens }: Props) {
         >
           <ShieldX size={13} />
           <span className="hidden sm:inline">Блок-лист</span>
-        </button>
-
-        {/* Tokens */}
-        <button
-          onClick={onTokens}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-            botTokens.length > 0
-              ? 'text-violet-400 border-violet-500/25 bg-violet-500/10 hover:bg-violet-500/20'
-              : 'text-gray-500 border-white/5 hover:text-violet-400 hover:bg-violet-400/10'
-          }`}
-          title="Bot Tokens"
-        >
-          <KeyRound size={13} />
-          <span className="hidden sm:inline">
-            {botTokens.length > 0 ? `${botTokens.length} токен${botTokens.length > 1 ? 'ов' : ''}` : 'Токены'}
-          </span>
         </button>
 
         {/* Validate / Stop */}
