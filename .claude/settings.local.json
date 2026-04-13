@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "Bash(powershell -ExecutionPolicy Bypass -File download-fonts.ps1)",
+      "Bash(curl -s -o /dev/null -w \"t.me/telegram → HTTP %{http_code}\\\\n\" \"https://t.me/telegram\" --max-time 10)",
+      "Bash(curl -s -o /dev/null -w \"corsproxy.io → HTTP %{http_code}\\\\n\" \"https://corsproxy.io/?url=https://t.me/telegram\" --max-time 10)",
+      "Bash(curl -s -o /dev/null -w \"allorigins → HTTP %{http_code}\\\\n\" \"https://api.allorigins.win/raw?url=https://t.me/telegram\" --max-time 10)",
+      "Bash(curl -s -o /dev/null -w 'corsproxy.io +UA → %{http_code}\\\\n' -H 'User-Agent: Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36' 'https://corsproxy.io/?url=https://t.me/telegram' --max-time 10)",
+      "Bash(curl -s -o /dev/null -w 'thingproxy → %{http_code}\\\\n' https://thingproxy.freeboard.io/fetch/https://t.me/telegram --max-time 10)",
+      "Bash(curl -s -o /dev/null -w 'codetabs → %{http_code}\\\\n' 'https://api.codetabs.com/v1/proxy?quest=https://t.me/telegram' --max-time 10)",
+      "Bash(curl -s -o /dev/null -w 'htmlpreview.github → %{http_code}\\\\n' 'https://api.allorigins.win/get?url=https://t.me/telegram' --max-time 10)",
+      "Bash(curl -s -o /dev/null -w \"google.com → %{http_code}\\\\n\" \"https://google.com\" --max-time 8)",
+      "Bash(curl -sL -w \"\\\\n---STATUS:%{http_code}---\\\\n\" \"https://api.codetabs.com/v1/proxy?quest=https://t.me/telegram\" --max-time 15)",
+      "Bash(curl -si \"https://corsproxy.io/?url=https://t.me/telegram\" --max-time 10)",
+      "Bash(curl -sL -o /dev/null -w \"t.me -L → %{http_code}\\\\n\" \"https://t.me/telegram\" --max-time 15)",
+      "Bash(curl -sL \"https://api.codetabs.com/v1/proxy?quest=https://t.me/telegram\" --max-time 15)",
+      "Bash(curl -sL \"https://api.codetabs.com/v1/proxy?quest=https://t.me/xfakeuser99999zzz\" --max-time 15)",
+      "Bash(curl -sL \"https://api.codetabs.com/v1/proxy?quest=https://t.me/durov\" --max-time 15)",
+      "Bash(curl -sL \"https://api.codetabs.com/v1/proxy?quest=https://t.me/zzznobodyzzzabc123\" --max-time 15)"
+    ]
+  }
+}
