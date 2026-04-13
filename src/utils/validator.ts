@@ -7,9 +7,9 @@ export interface ValidationResult {
   avatar: string;
 }
 
-const PROXY_CONCURRENCY = 8;
+const PROXY_CONCURRENCY = 5;
 const PROXY_TIMEOUT_MS  = 10000;
-const BATCH_DELAY_MS    = 500;
+const BATCH_DELAY_MS    = 800;
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
