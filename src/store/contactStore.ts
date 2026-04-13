@@ -8,6 +8,7 @@ interface ContactState {
   contacts: Contact[];
   folders: Folder[];
   excludeList: string[];
+  botTokens: string[];
   selectedIds: Set<string>;
   activeFilter: SidebarFilter;
   searchQuery: string;
@@ -31,6 +32,7 @@ interface ContactState {
   removeFolder: (id: string) => void;
   setExcludeList: (raw: string) => void;
   applyExcludeList: () => void;
+  setBotTokens: (tokens: string[]) => void;
   startValidation: () => void;
   stopValidation: () => void;
   exportSelected: () => string;
@@ -46,6 +48,7 @@ export const useContactStore = create<ContactState>()(
       contacts: [],
       folders: [],
       excludeList: [],
+      botTokens: [],
       selectedIds: new Set<string>(),
       activeFilter: 'all',
       searchQuery: '',
@@ -162,6 +165,8 @@ export const useContactStore = create<ContactState>()(
         set((s) => ({ contacts: s.contacts.filter((c) => !excludeSet.has(c.username)) }));
       },
 
+      setBotTokens: (tokens: string[]) => set({ botTokens: tokens }),
+
       startValidation: () => {
         const state = get();
         if (state.isValidating) return;
@@ -184,9 +189,11 @@ export const useContactStore = create<ContactState>()(
         });
 
         const usernames = toCheck.map((c) => c.username);
+        const tokens = get().botTokens;
 
         validateBatch(
           usernames,
+          tokens,
           (result: ValidationResult | null, username: string) => {
             if (result !== null) {
               const contact = get().contacts.find((c) => c.username === result.username);
@@ -292,9 +299,10 @@ export const useContactStore = create<ContactState>()(
       // contacts excluded — 100k records overflow localStorage (5 MB limit)
       // Re-import after page refresh; folders/tokens/blacklist persist.
       partialize: (state) => ({
-        folders:     state.folders,
-        excludeList: state.excludeList,
+        folders:      state.folders,
+        excludeList:  state.excludeList,
         activeFilter: state.activeFilter,
+        botTokens:    state.botTokens,
       }),
       storage: {
         getItem:    (name) => { const s = localStorage.getItem(name); return s ? JSON.parse(s) : null; },
