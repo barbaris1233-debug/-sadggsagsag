@@ -7,12 +7,12 @@ export interface ValidationResult {
   avatar: string;
 }
 
-const CONCURRENCY_PER_TOKEN = 4;
+const CONCURRENCY_PER_TOKEN = 1;   // 1 поток на токен — безопасно для TG
 const PROXY_CONCURRENCY     = 3;
 const BOT_TIMEOUT_MS        = 8000;
 const PROXY_TIMEOUT_MS      = 12000;
 const BATCH_DELAY_MS        = 1200;
-const MAX_RETRIES           = 2;
+const MAX_RETRIES           = 3;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -259,7 +259,8 @@ export async function validateBatch(
       botLimit(async () => {
         if (signal?.aborted) return;
 
-        await sleep(Math.random() * 150).catch(() => {});
+        // Равномерно распределяем старт запросов по времени
+        await sleep(Math.random() * 500).catch(() => {});
         if (signal?.aborted) return;
 
         let retries = 0;
@@ -276,6 +277,8 @@ export async function validateBatch(
           if (isRateLimited(botResult)) {
             pool.setCooldown(token, botResult.retryAfterMs);
             retries++;
+            // Ждём перед повтором чтобы не бить сразу
+            try { await sleep(botResult.retryAfterMs, signal); } catch { return; }
             continue;
           }
 
