@@ -17,8 +17,6 @@ export default function ImportModal({ open, onClose }: Props) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { importRaw } = useContactStore();
 
-  if (!open) return null;
-
   // Parse asynchronously so the UI stays responsive for large inputs
   const schedulePreview = useCallback((text: string) => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -30,6 +28,8 @@ export default function ImportModal({ open, onClose }: Props) {
       setParsing(false);
     }, 150);
   }, []);
+
+  if (!open) return null;
 
   const handleTextChange = (text: string) => {
     setRaw(text);
