@@ -11,7 +11,7 @@ const PROXY_CONCURRENCY = 3;
 const PROXY_TIMEOUT_MS  = 15000;
 const BATCH_DELAY_MS    = 1200;
 const BOT_TIMEOUT_MS    = 8000;
-const BOT_DELAY_MS      = 50;  // минимальная пауза, естественный темп ответа TG
+const BOT_DELAY_MS      = 300;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
