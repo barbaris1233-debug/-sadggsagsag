@@ -7,13 +7,9 @@ export interface ValidationResult {
   avatar: string;
 }
 
-const PROXY_CONCURRENCY = 3;
-const PROXY_TIMEOUT_MS  = 15000;
-const BATCH_DELAY_MS    = 1200;
-const BOT_TIMEOUT_MS    = 8000;
-const BOT_DELAY_MS      = 0;
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
+const PROXY_CONCURRENCY = 5;
+const PROXY_TIMEOUT_MS  = 10000;
+const BATCH_DELAY_MS    = 800;
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -22,43 +18,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
   });
 }
-
-// ── Bot API ───────────────────────────────────────────────────────────────────
-
-async function checkViaBotAPI(username: string, token: string, signal?: AbortSignal): Promise<ValidationResult | 'not_found' | 'error'> {
-  const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), BOT_TIMEOUT_MS);
-  signal?.addEventListener('abort', () => ctrl.abort(), { once: true });
-  try {
-    // Запрос идёт через Vercel serverless — с серверного IP, без браузерного rate-limit
-    const res = await fetch('/api/tg', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, token }),
-      signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-    if (res.status === 429) return 'error';
-    const data = await res.json() as { ok: boolean; result?: { type: string; is_bot?: boolean; first_name?: string; last_name?: string; title?: string; bio?: string; description?: string } };
-    if (!data.ok || !data.result) return 'not_found';
-    const chat = data.result;
-    let type: ValidationResult['type'];
-    if (chat.type === 'private')      type = chat.is_bot ? 'bot' : 'user';
-    else if (chat.type === 'channel') type = 'channel';
-    else                              type = 'group';
-    return {
-      username, status: 'verified', type,
-      displayName: chat.type === 'private' ? [chat.first_name, chat.last_name].filter(Boolean).join(' ') : (chat.title ?? ''),
-      bio: chat.bio ?? chat.description ?? '',
-      avatar: '',
-    };
-  } catch {
-    clearTimeout(timer);
-    return 'error';
-  }
-}
-
-// ── Proxy ─────────────────────────────────────────────────────────────────────
 
 function proxyUrl(u: string) {
   return `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(`https://t.me/${u}`)}`;
@@ -109,67 +68,15 @@ async function checkViaProxy(username: string, signal?: AbortSignal): Promise<Va
   }
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
 export async function validateBatch(
   usernames: string[],
-  tokens: string[],
   onResult: (result: ValidationResult | null, username: string) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const validTokens = tokens.filter((t) => /^\d{5,12}:[A-Za-z0-9_-]{35,}$/.test(t.trim()));
-
-  // ── Без токенов: proxy батчами ───────────────────────────────────────────
-  if (validTokens.length === 0) {
-    for (let i = 0; i < usernames.length; i += PROXY_CONCURRENCY) {
-      if (signal?.aborted) break;
-      if (i > 0) { try { await sleep(BATCH_DELAY_MS, signal); } catch { break; } }
-      await Promise.all(usernames.slice(i, i + PROXY_CONCURRENCY).map(async (u) => {
-        if (signal?.aborted) return;
-        try { onResult(await checkViaProxy(u, signal), u); } catch { if (!signal?.aborted) onResult(null, u); }
-      }));
-    }
-    return;
-  }
-
-  // ── С токенами ───────────────────────────────────────────────────────────
-  // Фаза 1: каждый токен берёт свою порцию и проверяет по очереди (1 req за раз)
-  // Токены работают параллельно друг другу, но каждый — строго по одному.
-  // Результат "not_found" или ошибка → юзер уходит в proxy.
-  const proxyNeeded: string[] = [];
-  const total = usernames.length;
-  let   idx   = 0; // общий счётчик — следующий username для токена
-
-  await Promise.all(
-    validTokens.map(async (token) => {
-      while (true) {
-        if (signal?.aborted) return;
-        const i = idx++;
-        if (i >= total) return;
-        const u = usernames[i];
-
-        const result = await checkViaBotAPI(u, token, signal);
-        if (signal?.aborted) return;
-
-        if (result !== 'not_found' && result !== 'error') {
-          onResult(result, u);
-        } else {
-          proxyNeeded.push(u);
-        }
-
-        // Пауза между запросами этого токена
-        try { await sleep(BOT_DELAY_MS, signal); } catch { return; }
-      }
-    }),
-  );
-
-  if (signal?.aborted) return;
-
-  // Фаза 2: оставшиеся через proxy батчами (тот же проверенный темп)
-  for (let i = 0; i < proxyNeeded.length; i += PROXY_CONCURRENCY) {
+  for (let i = 0; i < usernames.length; i += PROXY_CONCURRENCY) {
     if (signal?.aborted) break;
     if (i > 0) { try { await sleep(BATCH_DELAY_MS, signal); } catch { break; } }
-    await Promise.all(proxyNeeded.slice(i, i + PROXY_CONCURRENCY).map(async (u) => {
+    await Promise.all(usernames.slice(i, i + PROXY_CONCURRENCY).map(async (u) => {
       if (signal?.aborted) return;
       try { onResult(await checkViaProxy(u, signal), u); } catch { if (!signal?.aborted) onResult(null, u); }
     }));
