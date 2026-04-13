@@ -11,7 +11,7 @@ const PROXY_CONCURRENCY = 3;
 const PROXY_TIMEOUT_MS  = 15000;
 const BATCH_DELAY_MS    = 1200;
 const BOT_TIMEOUT_MS    = 8000;
-const BOT_DELAY_MS      = 300;
+const BOT_DELAY_MS      = 0;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -30,9 +30,15 @@ async function checkViaBotAPI(username: string, token: string, signal?: AbortSig
   const timer = setTimeout(() => ctrl.abort(), BOT_TIMEOUT_MS);
   signal?.addEventListener('abort', () => ctrl.abort(), { once: true });
   try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/getChat?chat_id=@${username}`, { signal: ctrl.signal });
+    // Запрос идёт через Vercel serverless — с серверного IP, без браузерного rate-limit
+    const res = await fetch('/api/tg', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, token }),
+      signal: ctrl.signal,
+    });
     clearTimeout(timer);
-    if (res.status === 429) return 'error'; // rate limited — skip, proxy will handle
+    if (res.status === 429) return 'error';
     const data = await res.json() as { ok: boolean; result?: { type: string; is_bot?: boolean; first_name?: string; last_name?: string; title?: string; bio?: string; description?: string } };
     if (!data.ok || !data.result) return 'not_found';
     const chat = data.result;
