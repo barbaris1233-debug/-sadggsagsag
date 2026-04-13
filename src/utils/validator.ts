@@ -1,15 +1,15 @@
 /**
- * Telegram Username Validator — v3
+ * Telegram Username Validator — v4
  *
- * Engine:
- *   1. Bot API  (direct browser→Telegram, CORS supported, ~200 ms/check)
- *   2. codetabs.com proxy → t.me HTML  (fallback / no-token mode)
+ * Strategy:
+ *   1. Bot API  — works reliably for channels, groups, bots.
+ *                 Returns 'not_found' for regular users the bot hasn't met.
+ *   2. codetabs.com proxy — the proven fallback for everything else.
+ *                           Original batch/delay approach preserved to avoid rate-limits.
  *
  * Token Pool:
  *   Round-robin with per-token cooldown on 429.
- *   CONCURRENCY_PER_TOKEN=4 → N tokens = N×4 parallel checks.
- *
- * No-token mode: codetabs only, PROXY_CONCURRENCY parallel.
+ *   Proxy calls are always limited to PROXY_CONCURRENCY=3 regardless of token count.
  */
 
 export interface ValidationResult {
@@ -22,12 +22,13 @@ export interface ValidationResult {
 }
 
 const CONCURRENCY_PER_TOKEN = 4;
-const PROXY_CONCURRENCY     = 5;
+const PROXY_CONCURRENCY     = 3;   // codetabs rate-limit safe ceiling
 const BOT_TIMEOUT_MS        = 6000;
-const PROXY_TIMEOUT_MS      = 12000;
+const PROXY_TIMEOUT_MS      = 15000;
+const BATCH_DELAY_MS        = 1200; // original proven delay between proxy batches
 const MAX_RETRIES           = 3;
 
-// ── Concurrency limiter ───────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function createLimiter(concurrency: number) {
   let active = 0;
@@ -141,6 +142,8 @@ async function checkViaBotAPI(
 
     if (data.ok && data.result) {
       const chat = data.result;
+      // Bot API reliably identifies channels, groups, bots.
+      // For private users it often returns 'not_found' — proxy handles those.
       let type: ValidationResult['type'];
       if (chat.type === 'private')      type = chat.is_bot ? 'bot' : 'user';
       else if (chat.type === 'channel') type = 'channel';
@@ -161,7 +164,7 @@ async function checkViaBotAPI(
   }
 }
 
-// ── Proxy / HTML scraping fallback ────────────────────────────────────────────
+// ── Proxy / HTML scraping (codetabs → t.me) ───────────────────────────────────
 
 function proxyUrl(u: string) {
   return `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(`https://t.me/${u}`)}`;
@@ -174,9 +177,9 @@ interface ParsedPage {
 
 function parsePage(html: string): ParsedPage {
   return {
-    ogTitle: html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)?.[1]?.trim() ?? '',
+    ogTitle: html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)?.[1]?.trim()   ?? '',
     ogDesc:  html.match(/<meta\s+property="og:description"\s+content="([^"]+)"/i)?.[1]?.trim() ?? '',
-    ogImage: html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i)?.[1]?.trim() ?? '',
+    ogImage: html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i)?.[1]?.trim()   ?? '',
     tgName:  html.match(/<div[^>]+class="tgme_page_title"[^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/i)?.[1]
                ?.replace(/<[^>]+>/g, '').trim() ?? '',
     tgDesc:  html.match(/<div[^>]+class="tgme_page_description"[^>]*>([\s\S]*?)<\/div>/i)?.[1]
@@ -196,13 +199,13 @@ function checkNotExist(p: ParsedPage): boolean {
 }
 
 function detectType(username: string, html: string): ValidationResult['type'] {
-  if (username.endsWith('bot'))                                                                  return 'bot';
-  if (/join\s+channel/i.test(html))                                                             return 'channel';
-  if (/join\s+group/i.test(html) || /\d[\d\s,]*\s*(?:subscriber|member|участник)/i.test(html)) return 'group';
+  if (username.endsWith('bot'))                                                                    return 'bot';
+  if (/join\s+channel/i.test(html))                                                               return 'channel';
+  if (/join\s+group/i.test(html) || /\d[\d\s,]*\s*(?:subscribers?|members?|участник)/i.test(html)) return 'group';
   return 'user';
 }
 
-async function checkViaProxy(username: string, signal?: AbortSignal): Promise<ValidationResult | null> {
+async function fetchViaProxy(username: string, signal?: AbortSignal): Promise<string | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), PROXY_TIMEOUT_MS);
   signal?.addEventListener('abort', () => ctrl.abort(), { once: true });
@@ -211,17 +214,9 @@ async function checkViaProxy(username: string, signal?: AbortSignal): Promise<Va
     clearTimeout(timer);
     if (!res.ok) return null;
     const html = await res.text();
-    const p = parsePage(html);
-    if (checkNotExist(p)) {
-      return { username, status: 'not_exist', type: detectType(username, html), displayName: '', bio: '', avatar: '' };
-    }
-    const hasRealImage = !!p.ogImage && !p.ogImage.includes('telegram.org/img/');
-    return {
-      username, status: 'verified', type: detectType(username, html),
-      displayName: p.tgName || p.ogTitle,
-      bio: p.tgDesc || p.ogDesc,
-      avatar: p.tgPhoto || (hasRealImage ? p.ogImage : ''),
-    };
+    // Sanity check: codetabs error pages won't contain tgme_ classes
+    if (!html.includes('tgme_')) return null;
+    return html;
   } catch (err) {
     clearTimeout(timer);
     if (signal?.aborted) throw err;
@@ -229,12 +224,35 @@ async function checkViaProxy(username: string, signal?: AbortSignal): Promise<Va
   }
 }
 
+async function checkViaProxy(username: string, signal?: AbortSignal): Promise<ValidationResult | null> {
+  const html = await fetchViaProxy(username, signal);
+  if (html === null) return null;
+
+  const p = parsePage(html);
+  if (checkNotExist(p)) {
+    return { username, status: 'not_exist', type: detectType(username, html), displayName: '', bio: '', avatar: '' };
+  }
+  const hasRealImage = !!p.ogImage && !p.ogImage.includes('telegram.org/img/');
+  return {
+    username, status: 'verified', type: detectType(username, html),
+    displayName: p.tgName || p.ogTitle,
+    bio: p.tgDesc || p.ogDesc,
+    avatar: p.tgPhoto || (hasRealImage ? p.ogImage : ''),
+  };
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Validates a batch of usernames concurrently.
- * With tokens:    Bot API first → codetabs fallback for 'not_found'
- * Without tokens: codetabs only (no Bot API)
+ * Validates a batch of usernames.
+ *
+ * With tokens:
+ *   - Channels/groups/bots → Bot API resolves instantly (no proxy needed)
+ *   - Regular users        → Bot API returns not_found → proxy fallback
+ *   - Proxy calls are globally capped at PROXY_CONCURRENCY to protect codetabs
+ *
+ * Without tokens:
+ *   - Original proven approach: batches of 3 with 1.2 s delay between batches
  */
 export async function validateBatch(
   usernames: string[],
@@ -244,26 +262,46 @@ export async function validateBatch(
 ): Promise<void> {
   const pool = new TokenPool(tokens);
   const hasTokens = pool.size > 0;
-  const concurrency = hasTokens ? CONCURRENCY_PER_TOKEN * pool.size : PROXY_CONCURRENCY;
-  const limit = createLimiter(concurrency);
+
+  // ── No-token mode: original batching (safe for codetabs) ─────────────────
+  if (!hasTokens) {
+    const batchSize = 3;
+    for (let i = 0; i < usernames.length; i += batchSize) {
+      if (signal?.aborted) break;
+      if (i > 0) {
+        try { await sleep(BATCH_DELAY_MS, signal); } catch { break; }
+        if (signal?.aborted) break;
+      }
+      const batch = usernames.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map(async (u) => {
+          if (signal?.aborted) return;
+          try {
+            const result = await checkViaProxy(u, signal);
+            onResult(result, u);
+          } catch {
+            if (!signal?.aborted) onResult(null, u);
+          }
+        }),
+      );
+    }
+    return;
+  }
+
+  // ── Token mode: Bot API concurrent + capped proxy fallback ───────────────
+  const botLimit   = createLimiter(CONCURRENCY_PER_TOKEN * pool.size);
+  const proxyLimit = createLimiter(PROXY_CONCURRENCY); // shared cap for proxy
 
   await Promise.all(
     usernames.map((u) =>
-      limit(async () => {
+      botLimit(async () => {
         if (signal?.aborted) return;
 
-        // Jitter — prevents all slots hitting same token simultaneously
-        await sleep(Math.random() * 250).catch(() => {});
+        // Jitter
+        await sleep(Math.random() * 200).catch(() => {});
         if (signal?.aborted) return;
 
-        // ── No-token path ──────────────────────────────────────────────
-        if (!hasTokens) {
-          try { onResult(await checkViaProxy(u, signal), u); }
-          catch { if (!signal?.aborted) onResult(null, u); }
-          return;
-        }
-
-        // ── Token path: Bot API → proxy fallback ───────────────────────
+        // Try Bot API with retries on 429
         let retries = 0;
         while (retries < MAX_RETRIES) {
           if (signal?.aborted) return;
@@ -282,18 +320,29 @@ export async function validateBatch(
           }
 
           if (botResult !== 'not_found') {
+            // Bot API found it (channel / group / bot / known user)
             onResult(botResult, u);
             return;
           }
 
-          // Bot said not_found → double-check via proxy (catches private/edge cases)
-          try { onResult(await checkViaProxy(u, signal), u); }
-          catch { if (!signal?.aborted) onResult(null, u); }
+          // Bot API: not_found (typical for private users) → proxy fallback
+          // Use the shared proxy limiter to avoid overloading codetabs
+          try {
+            const proxyResult = await proxyLimit(() => checkViaProxy(u, signal));
+            onResult(proxyResult, u);
+          } catch {
+            if (!signal?.aborted) onResult(null, u);
+          }
           return;
         }
 
-        // Exhausted retries
-        onResult(null, u);
+        // Exhausted Bot API retries → still try proxy
+        try {
+          const proxyResult = await proxyLimit(() => checkViaProxy(u, signal));
+          onResult(proxyResult, u);
+        } catch {
+          if (!signal?.aborted) onResult(null, u);
+        }
       }),
     ),
   );
