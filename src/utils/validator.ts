@@ -10,7 +10,7 @@ export interface ValidationResult {
 const CONCURRENCY_PER_TOKEN = 4;
 const PROXY_CONCURRENCY     = 3;
 const BOT_TIMEOUT_MS        = 8000;
-const PROXY_TIMEOUT_MS      = 15000;
+const PROXY_TIMEOUT_MS      = 12000;
 const BATCH_DELAY_MS        = 1200;
 const MAX_RETRIES           = 2;
 
@@ -248,11 +248,42 @@ export async function validateBatch(
     return;
   }
 
-  // ── С токенами: Bot API параллельно + proxy fallback с ограничением ─────
+  // ── С токенами: Bot API параллельно + proxy очередь с батчингом ────────
   // Bot API мгновенно решает каналы/группы/боты.
-  // Обычные пользователи идут через proxy (не более PROXY_CONCURRENCY одновременно).
-  const botLimit   = createLimiter(CONCURRENCY_PER_TOKEN * pool.size);
-  const proxyLimit = createLimiter(PROXY_CONCURRENCY);
+  // Обычные юзеры (not_found) → в очередь proxy, которая обрабатывает
+  // строго батчами по 3 с паузой 1200ms — проверенный безопасный темп.
+  const botLimit = createLimiter(CONCURRENCY_PER_TOKEN * pool.size);
+
+  // Proxy queue: батчи по 3 + 1200ms пауза (идентично no-token режиму)
+  type ProxyJob = { u: string; resolve: (r: ValidationResult | null) => void };
+  const proxyQueue: ProxyJob[] = [];
+  let proxyRunning = false;
+
+  const runProxyQueue = async () => {
+    if (proxyRunning) return;
+    proxyRunning = true;
+    while (proxyQueue.length > 0) {
+      if (signal?.aborted) break;
+      const batch = proxyQueue.splice(0, PROXY_CONCURRENCY);
+      await Promise.all(
+        batch.map(async ({ u, resolve }) => {
+          if (signal?.aborted) { resolve(null); return; }
+          try { resolve(await checkViaProxy(u, signal)); }
+          catch { resolve(null); }
+        }),
+      );
+      if (proxyQueue.length > 0 && !signal?.aborted) {
+        try { await sleep(BATCH_DELAY_MS, signal); } catch { break; }
+      }
+    }
+    proxyRunning = false;
+  };
+
+  const enqueueProxy = (u: string): Promise<ValidationResult | null> =>
+    new Promise((resolve) => {
+      proxyQueue.push({ u, resolve });
+      runProxyQueue();
+    });
 
   await Promise.all(
     usernames.map((u) =>
@@ -284,23 +315,13 @@ export async function validateBatch(
             return;
           }
 
-          // Bot API вернул not_found → proxy fallback
-          try {
-            const proxyResult = await proxyLimit(() => checkViaProxy(u, signal));
-            onResult(proxyResult, u);
-          } catch {
-            if (!signal?.aborted) onResult(null, u);
-          }
+          // Bot API вернул not_found → в proxy очередь
+          onResult(await enqueueProxy(u), u);
           return;
         }
 
-        // Исчерпали ретраи → всё равно пробуем proxy
-        try {
-          const proxyResult = await proxyLimit(() => checkViaProxy(u, signal));
-          onResult(proxyResult, u);
-        } catch {
-          if (!signal?.aborted) onResult(null, u);
-        }
+        // Исчерпали ретраи → в proxy очередь
+        onResult(await enqueueProxy(u), u);
       }),
     ),
   );
