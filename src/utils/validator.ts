@@ -248,42 +248,11 @@ export async function validateBatch(
     return;
   }
 
-  // ── С токенами: Bot API параллельно + proxy очередь с батчингом ────────
-  // Bot API мгновенно решает каналы/группы/боты.
-  // Обычные юзеры (not_found) → в очередь proxy, которая обрабатывает
-  // строго батчами по 3 с паузой 1200ms — проверенный безопасный темп.
-  const botLimit = createLimiter(CONCURRENCY_PER_TOKEN * pool.size);
-
-  // Proxy queue: батчи по 3 + 1200ms пауза (идентично no-token режиму)
-  type ProxyJob = { u: string; resolve: (r: ValidationResult | null) => void };
-  const proxyQueue: ProxyJob[] = [];
-  let proxyRunning = false;
-
-  const runProxyQueue = async () => {
-    if (proxyRunning) return;
-    proxyRunning = true;
-    while (proxyQueue.length > 0) {
-      if (signal?.aborted) break;
-      const batch = proxyQueue.splice(0, PROXY_CONCURRENCY);
-      await Promise.all(
-        batch.map(async ({ u, resolve }) => {
-          if (signal?.aborted) { resolve(null); return; }
-          try { resolve(await checkViaProxy(u, signal)); }
-          catch { resolve(null); }
-        }),
-      );
-      if (proxyQueue.length > 0 && !signal?.aborted) {
-        try { await sleep(BATCH_DELAY_MS, signal); } catch { break; }
-      }
-    }
-    proxyRunning = false;
-  };
-
-  const enqueueProxy = (u: string): Promise<ValidationResult | null> =>
-    new Promise((resolve) => {
-      proxyQueue.push({ u, resolve });
-      runProxyQueue();
-    });
+  // ── Фаза 1: Bot API параллельно ─────────────────────────────────────────
+  // Каналы/группы/боты → onResult сразу.
+  // Обычные юзеры (not_found) → собираем в proxyNeeded, слот сразу освобождается.
+  const botLimit   = createLimiter(CONCURRENCY_PER_TOKEN * pool.size);
+  const proxyNeeded: string[] = [];
 
   await Promise.all(
     usernames.map((u) =>
@@ -315,14 +284,34 @@ export async function validateBatch(
             return;
           }
 
-          // Bot API вернул not_found → в proxy очередь
-          onResult(await enqueueProxy(u), u);
+          // not_found → нужен proxy, освобождаем слот Bot API
+          proxyNeeded.push(u);
           return;
         }
 
-        // Исчерпали ретраи → в proxy очередь
-        onResult(await enqueueProxy(u), u);
+        proxyNeeded.push(u);
       }),
     ),
   );
+
+  // ── Фаза 2: Proxy батчами (проверенный безопасный темп) ──────────────────
+  for (let i = 0; i < proxyNeeded.length; i += PROXY_CONCURRENCY) {
+    if (signal?.aborted) break;
+    if (i > 0) {
+      try { await sleep(BATCH_DELAY_MS, signal); } catch { break; }
+      if (signal?.aborted) break;
+    }
+    const batch = proxyNeeded.slice(i, i + PROXY_CONCURRENCY);
+    await Promise.all(
+      batch.map(async (u) => {
+        if (signal?.aborted) return;
+        try {
+          const result = await checkViaProxy(u, signal);
+          onResult(result, u);
+        } catch {
+          if (!signal?.aborted) onResult(null, u);
+        }
+      }),
+    );
+  }
 }
